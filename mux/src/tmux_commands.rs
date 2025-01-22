@@ -453,43 +453,52 @@ fn parse_pane(layout: &str) -> anyhow::Result<PaneItem> {
     anyhow::bail!("Wrong pane layout format");
 }
 
-fn parse_layout(mut layout: &str, result: &mut Vec<TmuxLayout>,
-                mut stack: Option<Vec<PaneItem>>) -> anyhow::Result<usize> {
+fn parse_layout(mut layout: &str, result: &mut Vec<TmuxLayout>) -> anyhow::Result<(Option<TmuxLayout>, usize)> {
+    log::debug!("Parsing tmux layout: '{}'", layout);
+
     let re_pane        = Regex::new(r"^,?(\d+x\d+,\d+,\d+,\d+)").unwrap();
     let re_split_push  = Regex::new(r"^,?(\d+x\d+,\d+,\d+)[\{|\[]").unwrap();
     let re_split_h_pop = Regex::new(r"^\}").unwrap();
     let re_split_v_pop = Regex::new(r"^\]").unwrap();
 
     let mut parse_len = 0;
+    let mut stack = Vec::new();
 
-    log::debug!("Parsing tmux layout: '{}'", layout);
     while layout.len() > 0 {
         if let Some(caps) = re_split_push.captures(layout).unwrap() {
-            log::debug!("Tmux layout split");
-            let mut new_stack: Vec<PaneItem> = Vec::new();
+            log::debug!("Tmux layout split pane push");
             let len = caps.get(0).unwrap().as_str().len();
-            let pane = parse_pane(caps.get(1).unwrap().as_str()).unwrap();
-            new_stack.push(pane);
             parse_len += len;
+            let mut pane = parse_pane(caps.get(1).unwrap().as_str()).unwrap();
 
             layout = layout.get(len..).unwrap();
-            let len = parse_layout(layout, result, Some(new_stack))?;
-
-            if let Some(ref mut x) = stack {
-                // Copy the first item of inner layout to outer layout, we creat panes from outer to inner.
-                let pane = match &result[0] {
-                    TmuxLayout::SplitHorizontal(x) => {
-                        x[0].clone()
-                    }
-                    TmuxLayout::SplitVertical(x) => {
-                        x[0].clone()
-                    }
-                    TmuxLayout::SinglePane(_x) => {
-                        anyhow::bail!("The tmux layout is not right")
-                    }
-                };
-                x.push(pane);
+            if result.is_empty() {
+                // Fake one, to flag it is not a TmuxLayout::SinglePane will pop
+                result.push(TmuxLayout::SplitHorizontal(vec![]));
             }
+
+            let (split_pane, len) = parse_layout(layout, result).unwrap();
+            let mut split_pane = split_pane.unwrap();
+
+            match split_pane {
+                TmuxLayout::SplitHorizontal(ref mut x) => {
+                    let last_item = x.pop().unwrap();
+                    pane.pane_id = last_item.pane_id;
+                    x.insert(0, pane.clone());
+                }
+                TmuxLayout::SplitVertical(ref mut x) => {
+                    let last_item = x.pop().unwrap();
+                    pane.pane_id = last_item.pane_id;
+                    x.insert(0, pane.clone());
+                }
+                TmuxLayout::SinglePane(_x) => {
+                    anyhow::bail!("The tmux layout is not right")
+                }
+            }
+
+            result.insert(0, split_pane);
+
+            stack.push(pane);
 
             layout = layout.get(len..).unwrap();
             parse_len += len;
@@ -497,37 +506,29 @@ fn parse_layout(mut layout: &str, result: &mut Vec<TmuxLayout>,
             log::debug!("Tmux layout pane");
             let len = caps.get(0).unwrap().as_str().len();
             let pane = parse_pane(caps.get(1).unwrap().as_str()).unwrap();
-            match stack {
-                Some(ref mut x) => {
-                    x.push(pane);
-                    parse_len += len;
-                    layout = layout.get(len..).unwrap();
-                }
-                None => {
-                    result.push(TmuxLayout::SinglePane(pane));
-                    return Ok(parse_len + len);
-                }
+
+            // SinglePane
+            if result.is_empty() {
+                result.insert(0, TmuxLayout::SinglePane(pane));
+                return Ok((None, len));
             }
+
+            stack.push(pane);
+            parse_len += len;
+            layout = layout.get(len..).unwrap();
         } else if let Some(_caps) = re_split_h_pop.captures(layout).unwrap() {
             log::debug!("Tmux layout split horizontal pop");
-            if let Some(ref mut x) = stack {
-                let pane = x.pop().unwrap();
-                x[0].pane_id = pane.pane_id;
-                result.insert(0, TmuxLayout::SplitHorizontal(stack.unwrap()));
-                return Ok(parse_len + 1);
-            }
+            return Ok((Some(TmuxLayout::SplitHorizontal(stack)), parse_len + 1));
         } else if let Some(_caps) = re_split_v_pop.captures(layout).unwrap() {
             log::debug!("Tmux layout split vertical pop");
-            if let Some(mut x) = stack {
-                let pane = x.pop().unwrap();
-                x[0].pane_id = pane.pane_id;
-                result.insert(0, TmuxLayout::SplitVertical(x));
-                return Ok(parse_len + 1);
-            }
+            return Ok((Some(TmuxLayout::SplitVertical(stack)), parse_len + 1));
         }
     }
 
-    Ok(0)
+    // Pop the Fake one
+    let _ = result.pop();
+
+    Ok((None, 0))
 }
 
 #[derive(Debug)]
@@ -571,7 +572,7 @@ impl TmuxCommand for ListAllWindows {
 
             let mut layout = Vec::<TmuxLayout>::new();
 
-            let _ = parse_layout(window_layout, &mut layout, None)?;
+            let _ = parse_layout(window_layout, &mut layout)?;
             // Fill in the session_id and window_id
             for l in &mut layout {
                 match l {
