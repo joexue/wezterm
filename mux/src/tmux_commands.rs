@@ -252,6 +252,10 @@ impl TmuxDomainState {
                         tab.assign_pane(&local_pane);
                         self.add_attached_pane(&p, &tab.tab_id())?;
                         let _ = mux.add_pane(&local_pane);
+                        self.cmd_queue
+                            .lock()
+                            .push_back(Box::new(CapturePane(p.pane_id)));
+                        TmuxDomainState::schedule_send_next_command(self.domain_id);
                         break;
                     }
 
@@ -275,6 +279,10 @@ impl TmuxDomainState {
                         if let None = tab.get_active_pane() {
                             tab.assign_pane(&local_pane);
                             split_pane_index = tab.get_active_idx();
+                            self.cmd_queue
+                                .lock()
+                                .push_back(Box::new(CapturePane(p.pane_id)));
+                            TmuxDomainState::schedule_send_next_command(self.domain_id);
                             continue;
                         }
 
@@ -293,6 +301,11 @@ impl TmuxDomainState {
                             },
                             local_pane.clone()
                         )? + 1;
+
+                        self.cmd_queue
+                            .lock()
+                            .push_back(Box::new(CapturePane(p.pane_id)));
+                        TmuxDomainState::schedule_send_next_command(self.domain_id);
 
                     } else {
                         let pane_map = self.remote_panes.lock();
@@ -327,8 +340,8 @@ impl TmuxDomainState {
             }
         }
 
-        self.cmd_queue.lock().push_back(Box::new(ListAllPanes));
-        TmuxDomainState::schedule_send_next_command(self.domain_id);
+        //self.cmd_queue.lock().push_back(Box::new(ListAllPanes));
+        //TmuxDomainState::schedule_send_next_command(self.domain_id);
 
         Ok(())
     }
@@ -645,7 +658,7 @@ impl TmuxCommand for Resize {
 pub(crate) struct CapturePane(TmuxPaneId);
 impl TmuxCommand for CapturePane {
     fn get_command(&self) -> String {
-        format!("capture-pane -p -t %{} -e -C\n", self.0)
+        format!("capture-pane -p -t %{} -e -C -S -2000\n", self.0)
     }
 
     fn process_result(&self, domain_id: DomainId, result: &Guarded) -> anyhow::Result<()> {
@@ -659,9 +672,10 @@ impl TmuxCommand for CapturePane {
             None => anyhow::bail!("Tmux domain lost"),
         };
 
-        let unescaped = termwiz::tmux_cc::unvis(&result.output.trim_end_matches('\n')).context("unescape pane content")?;
+        //let unescaped = termwiz::tmux_cc::unvis(&result.output.trim_end_matches('\n')).context("unescape pane content")?;
+        let unescaped = termwiz::tmux_cc::unvis(&result.output).context("unescape pane content")?;
         // capturep contents returned from guarded lines which always contain a tailing '\n'
-        let unescaped = &unescaped[0..unescaped.len()].replace("\n", "\r\n");
+        let unescaped = &unescaped[0..unescaped.len().saturating_sub(1)].replace("\n", "\r\n");
 
         let pane_map = tmux_domain.inner.remote_panes.lock();
         if let Some(pane) = pane_map.get(&self.0) {
