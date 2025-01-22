@@ -454,30 +454,40 @@ fn parse_pane(layout: &str) -> anyhow::Result<PaneItem> {
 }
 
 fn parse_layout(mut layout: &str, result: &mut Vec<TmuxLayout>,
-    mut stack: Option<Vec<PaneItem>>) -> anyhow::Result<(usize, u64)> {
-    let re_split       = Regex::new(r"^,?(\d+x\d+,\d+,\d+)[\{|\[]").unwrap();
+                mut stack: Option<Vec<PaneItem>>) -> anyhow::Result<usize> {
     let re_pane        = Regex::new(r"^,?(\d+x\d+,\d+,\d+,\d+)").unwrap();
-    let re_split_h_end = Regex::new(r"^\}").unwrap();
-    let re_split_v_end = Regex::new(r"^\]").unwrap();
+    let re_split_push  = Regex::new(r"^,?(\d+x\d+,\d+,\d+)[\{|\[]").unwrap();
+    let re_split_h_pop = Regex::new(r"^\}").unwrap();
+    let re_split_v_pop = Regex::new(r"^\]").unwrap();
 
     let mut parse_len = 0;
 
+    log::debug!("Parsing tmux layout: '{}'", layout);
     while layout.len() > 0 {
-        log::debug!("Parsing tmux layout: '{}'", layout);
-        if let Some(caps) = re_split.captures(layout).unwrap() {
+        if let Some(caps) = re_split_push.captures(layout).unwrap() {
             log::debug!("Tmux layout split");
-            //need to change the id later, so it is mut
             let mut new_stack: Vec<PaneItem> = Vec::new();
             let len = caps.get(0).unwrap().as_str().len();
-            let mut pane = parse_pane(caps.get(1).unwrap().as_str()).unwrap();
-            new_stack.push(pane.clone());
+            let pane = parse_pane(caps.get(1).unwrap().as_str()).unwrap();
+            new_stack.push(pane);
             parse_len += len;
 
             layout = layout.get(len..).unwrap();
-            let (len, id) = parse_layout(layout, result, Some(new_stack))?;
+            let len = parse_layout(layout, result, Some(new_stack))?;
 
-            pane.pane_id = id;
             if let Some(ref mut x) = stack {
+                // Copy the first item of inner layout to outer layout, we creat panes from outer to inner.
+                let pane = match &result[0] {
+                    TmuxLayout::SplitHorizontal(x) => {
+                        x[0].clone()
+                    }
+                    TmuxLayout::SplitVertical(x) => {
+                        x[0].clone()
+                    }
+                    TmuxLayout::SinglePane(_x) => {
+                        anyhow::bail!("The tmux layout is not right")
+                    }
+                };
                 x.push(pane);
             }
 
@@ -495,29 +505,29 @@ fn parse_layout(mut layout: &str, result: &mut Vec<TmuxLayout>,
                 }
                 None => {
                     result.push(TmuxLayout::SinglePane(pane));
-                    return Ok((parse_len + len, pane.pane_id));
+                    return Ok(parse_len + len);
                 }
             }
-        } else if let Some(_caps) = re_split_h_end.captures(layout).unwrap() {
+        } else if let Some(_caps) = re_split_h_pop.captures(layout).unwrap() {
             log::debug!("Tmux layout split horizontal pop");
             if let Some(ref mut x) = stack {
                 let pane = x.pop().unwrap();
                 x[0].pane_id = pane.pane_id;
                 result.insert(0, TmuxLayout::SplitHorizontal(stack.unwrap()));
-                return Ok((parse_len + 1, pane.pane_id));
+                return Ok(parse_len + 1);
             }
-        } else if let Some(_caps) = re_split_v_end.captures(layout).unwrap() {
+        } else if let Some(_caps) = re_split_v_pop.captures(layout).unwrap() {
             log::debug!("Tmux layout split vertical pop");
             if let Some(mut x) = stack {
                 let pane = x.pop().unwrap();
                 x[0].pane_id = pane.pane_id;
                 result.insert(0, TmuxLayout::SplitVertical(x));
-                return Ok((parse_len + 1, pane.pane_id));
+                return Ok(parse_len + 1);
             }
         }
     }
 
-    Ok((0, 0))
+    Ok(0)
 }
 
 #[derive(Debug)]
@@ -561,7 +571,7 @@ impl TmuxCommand for ListAllWindows {
 
             let mut layout = Vec::<TmuxLayout>::new();
 
-            let (_, _id) = parse_layout(window_layout, &mut layout, None)?;
+            let _ = parse_layout(window_layout, &mut layout, None)?;
             // Fill in the session_id and window_id
             for l in &mut layout {
                 match l {
