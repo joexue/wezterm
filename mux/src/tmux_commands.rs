@@ -177,6 +177,16 @@ impl TmuxDomainState {
             if pane.session_id != current_session || !self.check_pane_attached(&pane) {
                 continue;
             }
+            let pane_map = self.remote_panes.lock();
+            let local_pane_id = pane_map.get(&pane.pane_id).unwrap().lock().local_pane_id;
+            let local_pane = mux.get_pane(local_pane_id).unwrap();
+            log::debug!("xxxxxxxxxxxxx {} {}", pane.cursor_x, pane.cursor_y);
+            local_pane.set_cursor_position(pane.cursor_x as usize, pane.cursor_y as usize);
+/*
+            let pane_map = self.remote_panes.lock();
+            let local_pane_id = pane_map.get(&pane.pane_id).unwrap().lock().local_pane_id;
+            let local_pane = mux.get_pane(local_pane_id).unwrap();
+            //local_pane.set_cursor_position(pane.cursor_x as usize, pane.cursor_y as usize);
 
             //Set active pane
             if pane.pane_active {
@@ -199,7 +209,7 @@ impl TmuxDomainState {
                 .lock()
                 .push_back(Box::new(CapturePane(pane.pane_id)));
             TmuxDomainState::schedule_send_next_command(self.domain_id);
-
+*/
             log::info!("new pane synced, id: {}", pane.pane_id);
         }
         Ok(())
@@ -340,8 +350,8 @@ impl TmuxDomainState {
             }
         }
 
-        //self.cmd_queue.lock().push_back(Box::new(ListAllPanes));
-        //TmuxDomainState::schedule_send_next_command(self.domain_id);
+        self.cmd_queue.lock().push_back(Box::new(ListAllPanes));
+        TmuxDomainState::schedule_send_next_command(self.domain_id);
 
         Ok(())
     }
